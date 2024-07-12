@@ -34,6 +34,12 @@ class GitHandler(QThread):
         self.progress.emit(100)
         self.finished.emit()
 
+    def commit_and_push(self, message):
+        self.repo.git.add(A=True)
+        self.repo.index.commit(message)
+        origin = self.repo.remote(name='origin')
+        origin.push()
+
 class AlbumApp(QMainWindow):
     def __init__(self):
         super().__init__()
