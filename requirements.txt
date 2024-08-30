@@ -1,9 +1,6 @@
-sys
-os
-gitpython
-shutil
-markdown
-pyyaml
 PyQt5
+gitpython
+markdown
+PyYAML
 qtawesome
 qdarkstyle
