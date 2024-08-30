@@ -7,12 +7,15 @@ a = Analysis(
     pathex=['.'],
     binaries=[],
     datas=[
-        ('src/logo-r.png', 'src/logo-r.png'),  # 确保图标文件被包含
+        ('src/logo-r.png', 'src'),  # 确保图标文件被包含
+        ('config.py', '.'),  # 包含配置文件
     ],
     hiddenimports=[
         'PyQt5.sip',
         'qtawesome',
         'qdarkstyle',
+        'git',
+        'yaml',
     ],
     hookspath=[],
     hooksconfig={},
@@ -28,20 +31,18 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='main',
+    name='AlbumViewer',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
-    argv_emulation=False,
+    argv_emulation=True,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='src/logo-r.png',  # 设置图标文件
+    icon='src/logo-r.png',
 )
 
 coll = COLLECT(
@@ -52,12 +53,15 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='main'
+    name='AlbumViewer'
 )
 
 app = BUNDLE(
     coll,
-    name='main',
+    name='AlbumViewer.app',
     icon='src/logo-r.png',
-    onefile=True,
+    bundle_identifier=None,
+    info_plist={
+        'NSHighResolutionCapable': 'True'
+    },
 )
