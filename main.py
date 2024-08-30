@@ -3,7 +3,6 @@ import os
 import git
 import shutil
 import yaml
-from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, 
                              QGridLayout, QFileDialog, QLineEdit, QFormLayout, QDialog, 
                              QProgressDialog, QMainWindow, QMessageBox)
@@ -11,22 +10,7 @@ from PyQt5.QtGui import QPixmap, QFont
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 import qtawesome as qta
 import qdarkstyle
-
-# 更新配置路径
-USER_DOCS = Path.home() / "Documents" / "MyAlbumApp"
-GIT_LOCAL_PATH = str(USER_DOCS)
-ALBUMS_PATH = str(USER_DOCS / "albums")
-IMAGES_PATH = str(USER_DOCS / "images")
-
-# 确保必要的目录存在
-os.makedirs(GIT_LOCAL_PATH, exist_ok=True)
-os.makedirs(ALBUMS_PATH, exist_ok=True)
-os.makedirs(IMAGES_PATH, exist_ok=True)
-
-# 从配置文件中读取Git仓库URL和凭证
-GIT_REPO_URL = 'https://github.com/MrHeYGeeker/picsite-he.git'
-GIT_USER = 'Gloridust'
-GIT_TOKEN = 'your_git_token_here'  # 请替换为实际的token，并确保不要在公开场合分享
+from config import GIT_REPO_URL, GIT_LOCAL_PATH, ALBUMS_PATH, IMAGES_PATH, GIT_USER, GIT_TOKEN
 
 class GitHandler(QThread):
     progress = pyqtSignal(int)
@@ -49,22 +33,16 @@ class GitHandler(QThread):
                 shutil.rmtree(GIT_LOCAL_PATH, onerror=self.remove_readonly)
             self.repo = git.Repo.clone_from(GIT_REPO_URL, GIT_LOCAL_PATH)
         except git.GitCommandError as e:
-            self.error.emit(f"Git克隆错误: {str(e)}")
-        except Exception as e:
-            self.error.emit(f"未知错误: {str(e)}")
+            self.error.emit(f"Git clone error: {str(e)}")
 
     def commit_and_push(self, message):
         try:
-            if not self.repo:
-                self.repo = git.Repo(GIT_LOCAL_PATH)
             self.repo.git.add(A=True)
             self.repo.index.commit(message)
             origin = self.repo.remote(name='origin')
             origin.push()
         except git.GitCommandError as e:
-            self.error.emit(f"Git提交和推送错误: {str(e)}")
-        except Exception as e:
-            self.error.emit(f"未知错误: {str(e)}")
+            self.error.emit(f"Git commit and push error: {str(e)}")
 
     def run(self):
         if self.action == 'clone':
