@@ -5,8 +5,20 @@ import shutil
 import yaml
 import threading
 from config import GIT_REPO_URL, GIT_LOCAL_PATH, ALBUMS_PATH, IMAGES_PATH, GIT_USER, GIT_TOKEN
+import sys
 
-app = Flask(__name__)
+def resource_path(relative_path):
+    """获取资源的绝对路径"""
+    try:
+        # PyInstaller 创建临时文件夹，将路径存储在 _MEIPASS 中
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    
+    return os.path.join(base_path, relative_path)
+
+app = Flask(__name__, 
+           template_folder=resource_path('templates'))
 clone_progress = 0
 clone_status = "未开始"
 
