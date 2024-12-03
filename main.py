@@ -1,39 +1,61 @@
-import sys
+from flask import Flask, render_template, jsonify, request, send_from_directory
 import os
 import git
 import shutil
 import yaml
-from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, 
-                             QGridLayout, QFileDialog, QLineEdit, QFormLayout, QDialog, 
-                             QProgressDialog, QMainWindow, QMessageBox)
-from PyQt5.QtGui import QPixmap, QFont
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-import qtawesome as qta
-import qdarkstyle
+import threading
 from config import GIT_REPO_URL, GIT_LOCAL_PATH, ALBUMS_PATH, IMAGES_PATH, GIT_USER, GIT_TOKEN
 
-class GitHandler(QThread):
-    progress = pyqtSignal(int)
-    finished = pyqtSignal()
-    error = pyqtSignal(str)
+app = Flask(__name__)
+clone_progress = 0
+clone_status = "未开始"
 
+class GitHandler:
     def __init__(self):
-        super().__init__()
         self.repo = None
-        self.action = None
-        self.message = None
-
+        
     def remove_readonly(self, func, path, excinfo):
         os.chmod(path, 0o777)
         func(path)
-
+        
     def clone_repo(self):
+        global clone_progress, clone_status
         try:
+            clone_status = "正在检查目录..."
+            clone_progress = 5
+            
             if os.path.exists(GIT_LOCAL_PATH):
+                clone_status = "正在清理旧目录..."
+                clone_progress = 10
                 shutil.rmtree(GIT_LOCAL_PATH, onerror=self.remove_readonly)
-            self.repo = git.Repo.clone_from(GIT_REPO_URL, GIT_LOCAL_PATH)
+            
+            clone_status = "正在克隆仓库..."
+            clone_progress = 20
+            
+            def progress_callback(op_code, cur_count, max_count=None, message=''):
+                global clone_progress, clone_status
+                if max_count:
+                    progress = int(20 + (cur_count / max_count * 70))  # 20-90%
+                    clone_progress = min(progress, 90)
+                    clone_status = f"正在克隆: {int(cur_count / max_count * 100)}%"
+            
+            self.repo = git.Repo.clone_from(
+                GIT_REPO_URL, 
+                GIT_LOCAL_PATH,
+                progress=progress_callback
+            )
+            
+            clone_progress = 100
+            clone_status = "完成"
+            return True
         except git.GitCommandError as e:
-            self.error.emit(f"Git clone error: {str(e)}")
+            clone_status = f"克隆失败: {str(e)}"
+            clone_progress = 0
+            return False
+        except Exception as e:
+            clone_status = f"发生错误: {str(e)}"
+            clone_progress = 0
+            return False
 
     def commit_and_push(self, message):
         try:
@@ -41,76 +63,27 @@ class GitHandler(QThread):
             self.repo.index.commit(message)
             origin = self.repo.remote(name='origin')
             origin.push()
+            return True, "提交成功"
         except git.GitCommandError as e:
-            self.error.emit(f"Git commit and push error: {str(e)}")
+            return False, f"Git错误: {str(e)}"
 
-    def run(self):
-        if self.action == 'clone':
-            self.progress.emit(10)
-            self.clone_repo()
-            self.progress.emit(100)
-        elif self.action == 'commit':
-            self.commit_and_push(self.message)
-        self.finished.emit()
+git_handler = GitHandler()
 
-    def set_action(self, action, message=None):
-        self.action = action
-        self.message = message
+@app.route('/')
+def index():
+    return render_template('index.html')
 
-class AlbumApp(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.initUI()
-        self.git_handler = GitHandler()
-        self.git_handler.progress.connect(self.update_progress)
-        self.git_handler.finished.connect(self.on_loading_finished)
-        self.git_handler.error.connect(self.show_error_message)
-        self.show_loading_dialog()
-        self.git_handler.set_action('clone')
-        self.git_handler.start()
+@app.route('/api/clone-status')
+def get_clone_status():
+    return jsonify({
+        'progress': clone_progress,
+        'status': clone_status
+    })
 
-    def show_loading_dialog(self):
-        self.loading_dialog = QProgressDialog("加载中...", None, 0, 100, self)
-        self.loading_dialog.setWindowTitle("请稍候")
-        self.loading_dialog.setWindowModality(Qt.WindowModal)
-        self.loading_dialog.setMinimumDuration(0)
-        self.loading_dialog.setValue(0)
-        self.loading_dialog.show()
-
-    def update_progress(self, value):
-        self.loading_dialog.setValue(value)
-
-    def on_loading_finished(self):
-        self.loading_dialog.close()
-        self.load_albums()
-
-    def show_error_message(self, message):
-        QMessageBox.critical(self, "错误", message)
-
-    def initUI(self):
-        self.setWindowTitle('Album Viewer')
-        self.setGeometry(100, 100, 800, 600)
-        self.main_widget = QWidget()
-        self.setCentralWidget(self.main_widget)
-        self.layout = QVBoxLayout(self.main_widget)
-
-        self.title_label = QLabel('我的相册')
-        self.title_label.setFont(QFont('Arial', 20))
-        self.title_label.setAlignment(Qt.AlignCenter)
-        self.layout.addWidget(self.title_label)
-
-        self.grid_layout = QGridLayout()
-        self.grid_layout.setSpacing(20)
-        self.layout.addLayout(self.grid_layout)
-
-        self.new_album_button = QPushButton('新建相册')
-        self.new_album_button.setStyleSheet("padding: 10px; font-size: 16px;")
-        self.new_album_button.setIcon(qta.icon('fa.plus'))
-        self.new_album_button.clicked.connect(self.create_new_album)
-        self.layout.addWidget(self.new_album_button, alignment=Qt.AlignCenter)
-
-    def load_albums(self):
-        self.albums = []
+@app.route('/api/albums')
+def get_albums():
+    albums = []
+    if os.path.exists(ALBUMS_PATH):
         for file_name in os.listdir(ALBUMS_PATH):
             if file_name.endswith('.md'):
                 file_path = os.path.join(ALBUMS_PATH, file_name)
@@ -118,176 +91,208 @@ class AlbumApp(QMainWindow):
                     content = file.read()
                     album = yaml.safe_load(content.split('---')[1])
                     album['path'] = file_path
-                    self.albums.append(album)
+                    albums.append(album)
+    return jsonify(albums)
 
-        self.display_albums()
+@app.route('/api/album/<album_id>')
+def get_album(album_id):
+    try:
+        file_path = os.path.join(ALBUMS_PATH, f'{album_id}.md')
+        if os.path.exists(file_path):
+            with open(file_path, 'r', encoding='utf-8') as file:
+                content = file.read()
+                parts = content.split('---')
+                if len(parts) >= 3:
+                    images = parts[2].strip().split('\n')
+                    return jsonify({
+                        'success': True,
+                        'images': [img.strip('- ') for img in images if img.strip()]
+                    })
+                else:
+                    return jsonify({
+                        'success': False,
+                        'message': '相册格式错误',
+                        'images': []
+                    })
+        return jsonify({
+            'success': False,
+            'message': '相册不存在',
+            'images': []
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f'加载相册失败: {str(e)}',
+            'images': []
+        })
 
-    def display_albums(self):
-        for i, album in enumerate(self.albums):
-            cover_image_path = os.path.join(GIT_LOCAL_PATH, 'public', album['coverImage'][1:])
-            pixmap = QPixmap(cover_image_path)
-            label = QLabel()
-            label.setPixmap(pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            label.mousePressEvent = lambda event, a=album: self.open_album(a)
-            self.grid_layout.addWidget(label, i // 3, (i % 3) * 2)
+@app.route('/images/<path:filename>')
+def serve_image(filename):
+    normalized_path = os.path.normpath(filename)
+    image_path = os.path.join(GIT_LOCAL_PATH, 'public', 'images', normalized_path)
+    directory = os.path.dirname(image_path)
+    filename = os.path.basename(image_path)
+    return send_from_directory(directory, filename)
 
-            album_info = QLabel(f"{album['name']}\n{album['date']}")
-            album_info.setFont(QFont('Arial', 14))
-            album_info.setAlignment(Qt.AlignCenter)
-            self.grid_layout.addWidget(album_info, i // 3, (i % 3) * 2 + 1)
-
-    def open_album(self, album):
-        self.album_view = AlbumView(album, self.git_handler)
-        self.album_view.show()
-
-    def create_new_album(self):
-        dialog = NewAlbumDialog(self)
-        if dialog.exec_():
-            album_data = dialog.get_album_data()
-            self.save_new_album(album_data)
-
-    def save_new_album(self, album_data):
-        album_folder = os.path.join(IMAGES_PATH, album_data['id'])
+@app.route('/api/create-album', methods=['POST'])
+def create_album():
+    try:
+        data = request.json
+        album_id = data['id']
+        
+        album_folder = os.path.join(IMAGES_PATH, album_id)
         os.makedirs(album_folder, exist_ok=True)
-        cover_image_dest = os.path.join(album_folder, os.path.basename(album_data['coverImage']))
-        shutil.copy(album_data['coverImage'], cover_image_dest)
-
-        album_data['coverImage'] = f'/images/{album_data["id"]}/{os.path.basename(album_data["coverImage"])}'
-
-        album_md_path = os.path.join(ALBUMS_PATH, f'{album_data["id"]}.md')
+        
+        cover_image = data['coverImage']
+        cover_path = f'/images/{album_id}/cover{os.path.splitext(cover_image)[1]}'
+        
+        album_data = {
+            'id': album_id,
+            'name': data['name'],
+            'date': data['date'],
+            'description': data['description'],
+            'coverImage': cover_path
+        }
+        
+        album_md_path = os.path.join(ALBUMS_PATH, f'{album_id}.md')
         with open(album_md_path, 'w', encoding='utf-8') as file:
             file.write('---\n')
-            yaml.dump(album_data, file)
+            yaml.dump(album_data, file, allow_unicode=True)
             file.write('---\n')
-            file.write(f"- {album_data['coverImage']}\n")
+            file.write(f"- {cover_path}\n")
+        
+        success, message = git_handler.commit_and_push('新建相册: ' + album_id)
+        
+        return jsonify({
+            'success': success,
+            'message': message
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        })
 
-        self.git_handler.set_action('commit', '新增相册')
-        self.git_handler.start()
-        self.git_handler.finished.connect(self.on_album_saved)
+@app.route('/api/upload-image', methods=['POST'])
+def upload_image():
+    try:
+        album_id = request.form.get('albumId')
+        file = request.files['image']
+        
+        if not file:
+            return jsonify({'success': False, 'message': '没有文件被上传'})
+            
+        filename = file.filename
+        save_path = os.path.join(IMAGES_PATH, album_id, filename)
+        file.save(save_path)
+        
+        album_path = os.path.join(ALBUMS_PATH, f'{album_id}.md')
+        with open(album_path, 'a', encoding='utf-8') as f:
+            f.write(f"- /images/{album_id}/{filename}\n")
+            
+        success, message = git_handler.commit_and_push(f'添加图片到相册 {album_id}')
+        
+        return jsonify({
+            'success': success,
+            'message': message,
+            'path': f'/images/{album_id}/{filename}'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        })
 
-    def on_album_saved(self):
-        self.git_handler.finished.disconnect(self.on_album_saved)
-        self.load_albums()
+@app.route('/api/upload-cover', methods=['POST'])
+def upload_cover():
+    try:
+        file = request.files['cover']
+        album_id = request.form.get('albumId')
+        
+        if not file:
+            return jsonify({'success': False, 'message': '没有文件被上传'})
+            
+        filename = f"cover{os.path.splitext(file.filename)[1]}"
+        album_folder = os.path.join(IMAGES_PATH, album_id)
+        os.makedirs(album_folder, exist_ok=True)
+        
+        save_path = os.path.join(album_folder, filename)
+        file.save(save_path)
+        
+        return jsonify({
+            'success': True,
+            'path': f'/images/{album_id}/{filename}'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        })
 
-class NewAlbumDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle('新建相册')
-        self.setGeometry(200, 200, 400, 300)
-        self.init_ui()
+@app.route('/api/delete-album/<album_id>', methods=['DELETE'])
+def delete_album(album_id):
+    try:
+        # 删除相册文件
+        album_md_path = os.path.join(ALBUMS_PATH, f'{album_id}.md')
+        if os.path.exists(album_md_path):
+            os.remove(album_md_path)
+            
+        # 删除相册图片目录
+        album_folder = os.path.join(IMAGES_PATH, album_id)
+        if os.path.exists(album_folder):
+            shutil.rmtree(album_folder)
+            
+        success, message = git_handler.commit_and_push(f'删除相册: {album_id}')
+        
+        return jsonify({
+            'success': success,
+            'message': message
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        })
 
-    def init_ui(self):
-        layout = QVBoxLayout()
+@app.route('/api/delete-image', methods=['DELETE'])
+def delete_image():
+    try:
+        data = request.json
+        album_id = data['albumId']
+        image_path = data['imagePath']
+        
+        # 从相册markdown文件中删除图片记录
+        album_md_path = os.path.join(ALBUMS_PATH, f'{album_id}.md')
+        with open(album_md_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+            
+        with open(album_md_path, 'w', encoding='utf-8') as f:
+            for line in lines:
+                if image_path not in line:
+                    f.write(line)
+        
+        # 删除图片文件
+        image_full_path = os.path.join(GIT_LOCAL_PATH, 'public', image_path.lstrip('/'))
+        if os.path.exists(image_full_path):
+            os.remove(image_full_path)
+            
+        success, message = git_handler.commit_and_push(f'删除图片: {image_path}')
+        
+        return jsonify({
+            'success': success,
+            'message': message
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        })
 
-        form_layout = QFormLayout()
-        self.id_edit = QLineEdit()
-        self.name_edit = QLineEdit()
-        self.date_edit = QLineEdit()
-        self.description_edit = QLineEdit()
-        form_layout.addRow('ID:', self.id_edit)
-        form_layout.addRow('名称:', self.name_edit)
-        form_layout.addRow('日期:', self.date_edit)
-        form_layout.addRow('描述:', self.description_edit)
-        layout.addLayout(form_layout)
-
-        self.image_button = QPushButton('选择封面图片')
-        self.image_button.setStyleSheet("padding: 5px; font-size: 14px;")
-        self.image_button.setIcon(qta.icon('fa.image'))
-        self.image_button.clicked.connect(self.select_cover_image)
-        layout.addWidget(self.image_button)
-
-        buttons = QVBoxLayout()
-        save_button = QPushButton('保存')
-        save_button.setStyleSheet("padding: 10px; font-size: 16px;")
-        save_button.setIcon(qta.icon('fa.save'))
-        save_button.clicked.connect(self.accept)
-        buttons.addWidget(save_button)
-
-        cancel_button = QPushButton('取消')
-        cancel_button.setStyleSheet("padding: 10px; font-size: 16px;")
-        cancel_button.setIcon(qta.icon('fa.times'))
-        cancel_button.clicked.connect(self.reject)
-        buttons.addWidget(cancel_button)
-
-        layout.addLayout(buttons)
-        self.setLayout(layout)
-
-    def select_cover_image(self):
-        options = QFileDialog.Options()
-        file_path, _ = QFileDialog.getOpenFileName(self, "选择封面图片", "", "Images (*.png *.jpg *.jpeg *.webp)", options=options)
-        if file_path:
-            self.cover_image_path = file_path
-
-    def get_album_data(self):
-        return {
-            'id': self.id_edit.text(),
-            'name': self.name_edit.text(),
-            'date': self.date_edit.text(),
-            'description': self.description_edit.text(),
-            'coverImage': self.cover_image_path
-        }
-
-class AlbumView(QWidget):
-    def __init__(self, album, git_handler):
-        super().__init__()
-        self.album = album
-        self.git_handler = git_handler
-        self.initUI()
-
-    def initUI(self):
-        self.setWindowTitle(self.album['name'])
-        self.setGeometry(100, 100, 800, 600)
-        self.layout = QVBoxLayout()
-        self.grid_layout = QGridLayout()
-        self.grid_layout.setSpacing(20)
-
-        self.load_images()
-
-        self.add_image_button = QPushButton('添加照片')
-        self.add_image_button.setStyleSheet("padding: 10px; font-size: 16px;")
-        self.add_image_button.setIcon(qta.icon('fa.plus'))
-        self.add_image_button.clicked.connect(self.add_image)
-
-        self.layout.addLayout(self.grid_layout)
-        self.layout.addWidget(self.add_image_button, alignment=Qt.AlignCenter)
-        self.setLayout(self.layout)
-
-    def load_images(self):
-        md_content = ""
-        with open(self.album['path'], 'r', encoding='utf-8') as file:
-            md_content = file.read()
-
-        image_paths = md_content.split('---')[2].strip().split('\n')
-        for i, image_path in enumerate(image_paths):
-            image_full_path = os.path.join(GIT_LOCAL_PATH, 'public', image_path[1:].strip())
-            pixmap = QPixmap(image_full_path)
-            label = QLabel()
-            label.setPixmap(pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            self.grid_layout.addWidget(label, i // 3, i % 3)
-
-    def add_image(self):
-        options = QFileDialog.Options()
-        file_path, _ = QFileDialog.getOpenFileName(self, "选择照片", "", "Images (*.png *.jpg *.jpeg *.webp)", options=options)
-        if file_path:
-            image_name = os.path.basename(file_path)
-            album_folder = os.path.join(IMAGES_PATH, self.album['id'])
-            image_dest = os.path.join(album_folder, image_name)
-            shutil.copy(file_path, image_dest)
-
-            with open(self.album['path'], 'a', encoding='utf-8') as file:
-                file.write(f"- /images/{self.album['id']}/{image_name}\n")
-
-            self.git_handler.set_action('commit', '添加照片')
-            self.git_handler.start()
-            self.git_handler.finished.connect(self.on_image_added)
-
-    def on_image_added(self):
-        self.git_handler.finished.disconnect(self.on_image_added)
-        self.load_images()
+def start_clone():
+    global clone_progress, clone_status
+    clone_progress = 10
+    git_handler.clone_repo()
 
 if __name__ == '__main__':
-    app = QApplication(sys.argv)
-    app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
-    ex = AlbumApp()
-    ex.show()
-    sys.exit(app.exec_())
+    threading.Thread(target=start_clone).start()
+    app.run(debug=True)
