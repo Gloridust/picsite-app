@@ -87,11 +87,29 @@ def get_albums():
         for file_name in os.listdir(ALBUMS_PATH):
             if file_name.endswith('.md'):
                 file_path = os.path.join(ALBUMS_PATH, file_name)
-                with open(file_path, 'r', encoding='utf-8') as file:
-                    content = file.read()
-                    album = yaml.safe_load(content.split('---')[1])
-                    album['path'] = file_path
-                    albums.append(album)
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as file:
+                        content = file.read()
+                        parts = content.split('---')
+                        if len(parts) >= 2:
+                            # 尝试解析 YAML
+                            try:
+                                album = yaml.safe_load(parts[1])
+                                if album:
+                                    # 确保所有必需字段都存在
+                                    required_fields = ['id', 'name', 'date', 'coverImage']
+                                    if all(field in album for field in required_fields):
+                                        album['path'] = file_path
+                                        # 统一日期格式
+                                        if isinstance(album['date'], str):
+                                            album['date'] = album['date'].replace("'", "")
+                                        albums.append(album)
+                                    else:
+                                        print(f"警告: {file_name} 缺少必需字段")
+                            except yaml.YAMLError as e:
+                                print(f"警告: {file_name} YAML 解析错误: {str(e)}")
+                except Exception as e:
+                    print(f"警告: 读取文件 {file_name} 时出错: {str(e)}")
     return jsonify(albums)
 
 @app.route('/api/album/<album_id>')
@@ -103,10 +121,37 @@ def get_album(album_id):
                 content = file.read()
                 parts = content.split('---')
                 if len(parts) >= 3:
-                    images = parts[2].strip().split('\n')
+                    # 解析 frontmatter
+                    try:
+                        album_data = yaml.safe_load(parts[1])
+                        if not album_data:
+                            return jsonify({
+                                'success': False,
+                                'message': '相册元数据解析失败',
+                                'images': []
+                            })
+                    except yaml.YAMLError:
+                        return jsonify({
+                            'success': False,
+                            'message': 'YAML 解析错误',
+                            'images': []
+                        })
+
+                    # 解析图片列表
+                    images_content = parts[2].strip()
+                    images = []
+                    for line in images_content.split('\n'):
+                        line = line.strip()
+                        if line.startswith('- '):
+                            image_path = line[2:].strip()
+                            images.append(image_path)
+                        elif line.startswith('/images/'):  # 兼容没有 "- " 前缀的路径
+                            images.append(line.strip())
+
                     return jsonify({
                         'success': True,
-                        'images': [img.strip('- ') for img in images if img.strip()]
+                        'images': images,
+                        'album': album_data  # 添加相册信息
                     })
                 else:
                     return jsonify({
@@ -120,6 +165,7 @@ def get_album(album_id):
             'images': []
         })
     except Exception as e:
+        print(f"加载相册 {album_id} 时出错: {str(e)}")  # 添加日志
         return jsonify({
             'success': False,
             'message': f'加载相册失败: {str(e)}',
@@ -143,23 +189,25 @@ def create_album():
         album_folder = os.path.join(IMAGES_PATH, album_id)
         os.makedirs(album_folder, exist_ok=True)
         
-        cover_image = data['coverImage']
-        cover_path = f'/images/{album_id}/cover{os.path.splitext(cover_image)[1]}'
+        # 统一日期格式
+        date = data['date']
+        if isinstance(date, str):
+            date = date.replace("'", "")
         
         album_data = {
             'id': album_id,
             'name': data['name'],
-            'date': data['date'],
-            'description': data['description'],
-            'coverImage': cover_path
+            'date': date,
+            'description': data.get('description', ''),  # 使用 get 方法处理可选字段
+            'coverImage': data['coverImage']
         }
         
         album_md_path = os.path.join(ALBUMS_PATH, f'{album_id}.md')
         with open(album_md_path, 'w', encoding='utf-8') as file:
             file.write('---\n')
-            yaml.dump(album_data, file, allow_unicode=True)
+            yaml.dump(album_data, file, allow_unicode=True, default_flow_style=False, sort_keys=False)
             file.write('---\n')
-            file.write(f"- {cover_path}\n")
+            file.write(f"- {album_data['coverImage']}\n")
         
         success, message = git_handler.commit_and_push('新建相册: ' + album_id)
         
